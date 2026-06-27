@@ -75,13 +75,6 @@ jobs:
           tauriScript: pnpm
           args: --target x86_64-pc-windows-msvc
 
-      - name: Upload workflow artifact
-        uses: actions/upload-artifact@v6
-        with:
-          name: Clash-Verge-Windows-x64
-          path: target/x86_64-pc-windows-msvc/release/bundle/nsis/*setup*
-          if-no-files-found: error
-
       - name: Upload GitHub release
         uses: softprops/action-gh-release@v3
         with:
