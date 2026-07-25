@@ -42,12 +42,12 @@ export const useLayoutEvents = (
     register(
       addListener('verge://refresh-clash-config', () => {
         revalidateKeys([
-          'getProxies',
+          'getProxyView',
           'getVersion',
           'getClashConfig',
+          'getClashInfo',
           'getClashMode',
           'getRuntimeConfig',
-          'getProxyProviders',
           'getRules',
           'getRuleProviders',
         ])
