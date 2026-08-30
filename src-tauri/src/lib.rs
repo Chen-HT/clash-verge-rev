@@ -31,11 +31,10 @@ mod app_init {
     use super::*;
 
     /// Initialize singleton monitoring for other instances
-    pub fn init_singleton_check() -> Result<()> {
+    pub fn init_singleton_check() -> Result<server::SingletonDisposition> {
         AsyncHandler::block_on(async move {
             logging!(info, Type::Setup, "开始检查单例实例...");
-            server::check_singleton().await?;
-            Ok(())
+            server::check_singleton().await
         })
     }
 
@@ -52,6 +51,7 @@ mod app_init {
             .plugin(tauri_plugin_fs::init())
             .plugin(tauri_plugin_dialog::init())
             .plugin(tauri_plugin_shell::init())
+            .plugin(tauri_plugin_opener::init())
             .plugin(tauri_plugin_deep_link::init())
             .plugin(tauri_plugin_http::init())
             .plugin(
@@ -81,10 +81,8 @@ mod app_init {
         app.deep_link().on_open_url(|event| {
             let urls = event.urls();
             AsyncHandler::spawn(move || async move {
-                if let Some(url) = urls.first()
-                    && let Err(e) = resolve::resolve_scheme(url.as_ref()).await
-                {
-                    logging!(error, Type::Setup, "Failed to resolve scheme: {}", e);
+                if let Some(url) = urls.first() {
+                    resolve::resolve_scheme(url.as_ref()).await;
                 }
             });
         });
@@ -131,7 +129,6 @@ mod app_init {
             cmd::get_embedded_server_port,
             cmd::open_app_dir,
             cmd::open_logs_dir,
-            cmd::open_web_url,
             cmd::open_core_dir,
             cmd::get_portable_flag,
             cmd::get_network_interfaces,
@@ -140,7 +137,9 @@ mod app_init {
             cmd::start_core,
             cmd::stop_core,
             cmd::restart_core,
+            cmd::upgrade_clash_core,
             cmd::get_runtime_state,
+            cmd::get_pending_failures,
             cmd::get_auto_launch_status,
             cmd::entry_lightweight_mode,
             cmd::exit_lightweight_mode,
@@ -165,9 +164,9 @@ mod app_init {
             cmd::copy_clash_env,
             cmd::sync_tray_proxy_selection,
             cmd::record_selected_node,
+            cmd::forget_selected_node,
             cmd::save_dns_config,
             cmd::apply_dns_config,
-            cmd::check_dns_config_exists,
             cmd::get_dns_config_content,
             cmd::validate_dns_config,
             cmd::get_clash_logs,
@@ -208,21 +207,55 @@ mod app_init {
             cmd::restore_webdav_backup,
             cmd::get_unlock_items,
             cmd::check_media_unlock,
+            cmd::check_media_unlock_item,
         ]
     }
 }
 
-pub fn run() {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StartupAction {
+    Continue,
+    ExitSuccess,
+    ExitFailure,
+}
+
+fn handle_singleton_startup(
+    result: Result<server::SingletonDisposition>,
+    report_error: impl FnOnce(&anyhow::Error),
+) -> StartupAction {
+    match result {
+        Ok(server::SingletonDisposition::Primary) => StartupAction::Continue,
+        Ok(server::SingletonDisposition::Secondary) => StartupAction::ExitSuccess,
+        Err(error) => {
+            report_error(&error);
+            StartupAction::ExitFailure
+        }
+    }
+}
+
+pub fn run() -> std::process::ExitCode {
     #[cfg(all(target_os = "macos", not(debug_assertions), not(test), not(feature = "verge-dev")))]
     if utils::macos_launch_guard::enforce_before_initialization() == utils::macos_launch_guard::LaunchDisposition::Exit
     {
-        return;
+        return std::process::ExitCode::SUCCESS;
     }
 
     let _ = utils::dirs::init_portable_flag();
 
-    if app_init::init_singleton_check().is_err() {
-        return;
+    // Runs before the singleton check, which is the first thing to open a file in that directory.
+    #[cfg(windows)]
+    if let Err(error) =
+        utils::dirs::preinit_app_data_dir().and_then(|root| core::owner_identity::repair_app_data_root_owner(&root))
+    {
+        // The logger is installed later in setup(), so this would otherwise be lost.
+        eprintln!("[clash-verge] 应用数据目录所有权修复失败: {error:#}");
+        logging!(error, Type::Setup, "应用数据目录所有权修复失败: {error:#}");
+    }
+
+    match handle_singleton_startup(app_init::init_singleton_check(), utils::startup::report_error) {
+        StartupAction::Continue => {}
+        StartupAction::ExitSuccess => return std::process::ExitCode::SUCCESS,
+        StartupAction::ExitFailure => return std::process::ExitCode::FAILURE,
     }
 
     #[cfg(target_os = "linux")]
@@ -482,4 +515,30 @@ pub fn run() {
         },
         _ => {}
     });
+    std::process::ExitCode::SUCCESS
+}
+
+#[cfg(test)]
+mod startup_tests {
+    use super::{StartupAction, handle_singleton_startup};
+    use crate::utils::server::SingletonDisposition;
+    use std::cell::Cell;
+
+    #[test]
+    fn secondary_instance_exits_quietly_and_successfully() {
+        let reported = Cell::new(false);
+        let action = handle_singleton_startup(Ok(SingletonDisposition::Secondary), |_| reported.set(true));
+
+        assert_eq!(action, StartupAction::ExitSuccess);
+        assert!(!reported.get());
+    }
+
+    #[test]
+    fn fatal_singleton_error_is_reported_and_fails_startup() {
+        let reported = Cell::new(false);
+        let action = handle_singleton_startup(Err(anyhow::anyhow!("listener failed")), |_| reported.set(true));
+
+        assert_eq!(action, StartupAction::ExitFailure);
+        assert!(reported.get());
+    }
 }
