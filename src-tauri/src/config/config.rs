@@ -19,11 +19,7 @@ use clash_verge_draft::Draft;
 use clash_verge_logging::{Type, logging, logging_error};
 use serde_yaml_ng::{Mapping, Value};
 use smartstring::alias::String;
-use std::{
-    collections::HashSet,
-    path::PathBuf,
-    sync::atomic::{AtomicBool, Ordering},
-};
+use std::{collections::HashSet, path::PathBuf};
 use tokio::sync::{Mutex, MutexGuard, OnceCell};
 use tokio::time::sleep;
 
@@ -34,7 +30,6 @@ pub(crate) struct Config {
     runtime_config: Draft<IRuntime>,
 }
 
-static TUN_SESSION_SUPPRESSED: AtomicBool = AtomicBool::new(false);
 static CONFIG_WRITE_LOCK: Mutex<()> = Mutex::const_new(());
 
 impl Config {
@@ -82,24 +77,7 @@ impl Config {
         Ok(())
     }
 
-    pub fn tun_suppressed_for_session() -> bool {
-        TUN_SESSION_SUPPRESSED.load(Ordering::Acquire)
-    }
-
-    pub(crate) async fn suppress_tun_for_session() {
-        TUN_SESSION_SUPPRESSED.store(true, Ordering::Release);
-        Handle::refresh_verge();
-        let _ = tray::Tray::global().update_menu().await;
-    }
-
-    pub(crate) async fn restore_tun_for_session() {
-        TUN_SESSION_SUPPRESSED.store(false, Ordering::Release);
-        Handle::refresh_verge();
-        let _ = tray::Tray::global().update_menu().await;
-    }
-
     pub(crate) async fn disable_tun_and_persist() -> Result<()> {
-        TUN_SESSION_SUPPRESSED.store(false, Ordering::Release);
         let verge = Self::verge().await;
         verge.edit_draft(|draft| {
             draft.enable_tun_mode = Some(false);
@@ -166,16 +144,16 @@ impl Config {
                 .await?;
             return Ok(Some(("config_validate::boot_error", error_msg)));
         }
-        logging!(info, Type::Config, "生成运行时配置成功");
+        logging!(debug, Type::Config, "生成运行时配置成功");
 
         let config_result = Self::generate_file(ConfigType::Run).await;
 
         if config_result.is_ok() {
-            logging!(info, Type::Config, "开始验证配置");
+            logging!(debug, Type::Config, "开始验证配置");
 
             match CoreConfigValidator::global().validate_config_outcome().await {
                 Ok(outcome) if outcome.is_valid() => {
-                    logging!(info, Type::Config, "配置验证成功");
+                    logging!(debug, Type::Config, "配置验证成功");
                     Ok(None)
                 }
                 Ok(outcome) => {
@@ -192,7 +170,7 @@ impl Config {
                     Ok(Some(("config_validate::boot_error", error_msg)))
                 }
                 Err(err) => {
-                    logging!(warn, Type::Config, "验证过程执行失败: {}", err);
+                    logging!(warn, Type::Config, "验证过程执行失败: {err:#}");
                     CoreManager::global()
                         .use_default_config("config_validate::process_terminated", "")
                         .await?;
@@ -200,7 +178,8 @@ impl Config {
                 }
             }
         } else {
-            logging!(warn, Type::Config, "生成配置文件失败，使用默认配置");
+            let error_msg = config_result.err().map(|err| err.to_string()).unwrap_or_default();
+            logging!(warn, Type::Config, "生成配置文件失败，使用默认配置: {error_msg}");
             CoreManager::global()
                 .use_default_config("config_validate::error", "")
                 .await?;
@@ -272,13 +251,13 @@ impl Config {
         .retry(backoff)
         .await
         {
-            logging!(error, Type::Setup, "Config init verification failed: {}", e);
+            logging!(error, Type::Setup, "Config init verification failed: {e:#}");
         }
     }
 
     /// Commits drafts during exit/restart/shutdown so user changes are not lost.
     pub async fn apply_all_and_save_file() {
-        logging!(info, Type::Config, "save all draft data");
+        logging!(debug, Type::Config, "save all draft data");
         let save_clash_task = AsyncHandler::spawn(|| async {
             let clash = Self::clash().await;
             clash.apply();

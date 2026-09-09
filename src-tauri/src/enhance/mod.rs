@@ -124,7 +124,7 @@ async fn get_config_values() -> ConfigValues {
 
     let (clash_core, enable_tun, enable_builtin, socks_enabled, http_enabled, enable_dns_settings) = (
         Some(verge_arc.get_valid_clash_core()),
-        enable_tun_mode.unwrap_or(false) && !Config::tun_suppressed_for_session(),
+        enable_tun_mode.unwrap_or(false),
         enable_builtin_enhanced.unwrap_or(true),
         verge_socks_enabled.unwrap_or(false),
         verge_http_enabled.unwrap_or(false),
@@ -551,7 +551,7 @@ async fn apply_builtin_scripts(mut config: Mapping, clash_core: Option<String>, 
                         config = res_config;
                     }
                     Err(err) => {
-                        logging!(error, Type::Core, "builtin script error `{err}`");
+                        logging!(error, Type::Core, "builtin script error `{err:#}`");
                     }
                 }
             }
@@ -562,7 +562,8 @@ async fn apply_builtin_scripts(mut config: Mapping, clash_core: Option<String>, 
 }
 
 fn cleanup_proxy_groups(mut config: Mapping) -> Mapping {
-    const BUILTIN_POLICIES: &[&str] = &["DIRECT", "REJECT", "REJECT-DROP", "PASS"];
+    // built-in proxies docs: https://wiki.metacubex.one/config/proxies/built-in
+    const BUILTIN_POLICIES: &[&str] = &["DIRECT", "REJECT", "REJECT-DROP", "PASS", "PASS-RULE"];
 
     let proxy_names = config
         .get("proxies")
@@ -678,7 +679,7 @@ async fn apply_dns_settings(mut config: Mapping, enable_dns_settings: bool) -> M
                 && hosts_value.is_mapping()
             {
                 config.insert("hosts".into(), hosts_value.clone());
-                logging!(info, Type::Core, "apply hosts configuration");
+                logging!(debug, Type::Core, "apply hosts configuration");
             }
 
             if let Some(dns_value) = dns_config.get("dns") {
@@ -686,13 +687,13 @@ async fn apply_dns_settings(mut config: Mapping, enable_dns_settings: bool) -> M
                     let mut dns_mapping = dns_mapping.clone();
                     ensure_fake_ip_range6(&mut dns_mapping);
                     config.insert("dns".into(), dns_mapping.into());
-                    logging!(info, Type::Core, "apply dns_config.yaml (dns section)");
+                    logging!(debug, Type::Core, "apply dns_config.yaml (dns section)");
                 }
             } else {
                 let mut dns_config = dns_config;
                 ensure_fake_ip_range6(&mut dns_config);
                 config.insert("dns".into(), dns_config.into());
-                logging!(info, Type::Core, "apply dns_config.yaml");
+                logging!(debug, Type::Core, "apply dns_config.yaml");
             }
         }
     }
